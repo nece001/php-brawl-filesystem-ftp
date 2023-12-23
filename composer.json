@@ -1,0 +1,21 @@
+{
+    "name": "nece001/php-brawl-filesystem-ftp",
+    "description": "php 文件系统信基础服务项目(FTP)",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Nece\\Brawl\\FileSystem\\Ftp\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "nece001",
+            "email": "nece001@163.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.2",
+        "nece001/php-brawl-filesystem": "^1.0"
+    }
+}
