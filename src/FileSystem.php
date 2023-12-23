@@ -5,11 +5,56 @@ namespace Nece\Brawl\FileSystem\Ftp;
 use Nece\Brawl\ConfigAbstract;
 use Nece\Brawl\FileSystem\FileSystemAbstract;
 use Nece\Brawl\FileSystem\FileSystemException;
-use Throwable;
 
 class FileSystem extends FileSystemAbstract
 {
-    protected $base_path;
+    private $host;
+    private $port;
+    private $timeout;
+    private $mode;
+    private $pasv;
+    private $username;
+    private $password;
+    private $tmp_dir;
+
+    private $ftp;
+
+    public function __destruct()
+    {
+        if ($this->ftp) {
+            ftp_close($this->ftp);
+        }
+    }
+
+    /**
+     * 获取连接
+     *
+     * @Author nece001@163.com
+     * @Created 2023-12-23
+     *
+     * @return \Ftp\Connection
+     */
+    private function getConnection()
+    {
+        if (!$this->ftp) {
+            $this->ftp = ftp_connect($this->host, $this->port, $this->timeout);
+            if (!$this->ftp) {
+                throw new FileSystemException('连接失败');
+            }
+
+            if (!ftp_login($this->ftp, $this->username, $this->password)) {
+                throw new FileSystemException('登录失败');
+            }
+
+            if ($this->pasv) {
+                if (!ftp_pasv($this->ftp, true)) {
+                    throw new FileSystemException('设置被动模式失败');
+                }
+            }
+        }
+
+        return $this->ftp;
+    }
 
     /**
      * 设置配置
@@ -25,57 +70,75 @@ class FileSystem extends FileSystemAbstract
     {
         parent::setConfig($config);
 
-        $this->base_path = rtrim(str_replace('/', DIRECTORY_SEPARATOR, $this->getConfigValue('base_path', '')), DIRECTORY_SEPARATOR);
-        $this->sub_path = trim(str_replace('/', DIRECTORY_SEPARATOR, $this->getConfigValue('sub_path', '')), DIRECTORY_SEPARATOR);
+        $this->host = $this->getConfigValue('base_url');
+        $this->port = $this->getConfigValue('port');
+        $this->timeout = $this->getConfigValue('timeout');
+        $this->username = $this->getConfigValue('username');
+        $this->password = $this->getConfigValue('password');
+        $this->tmp_dir = $this->getConfigValue('tmp_dir');
+
+        $this->mode = intval($this->getConfigValue('mode', 1)) == 1 ? FTP_ASCII : FTP_BINARY;
+        $this->pasv = intval($this->getConfigValue('pasv', 1)) == 1 ? true : false;
     }
 
     /**
-     * 构建绝对路径
+     * 创建临时文件名
      *
      * @Author nece001@163.com
-     * @DateTime 2023-06-17
-     *
-     * @param string $path
+     * @Created 2023-12-23
      *
      * @return string
      */
-    protected function buildPath($path)
+    private function buildTmpName()
     {
-        $path = ltrim(str_replace('/', DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
-        return $this->base_path . DIRECTORY_SEPARATOR . $path;
+        if ($this->tmp_dir) {
+            $path = $this->tmp_dir;
+        } else {
+            $path = sys_get_temp_dir();
+        }
+
+        $path = rtrim(str_replace('/', DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
+        if (!is_dir($path)) {
+            mkdir($path, 0777, true);
+        }
+        return  $path . DIRECTORY_SEPARATOR . uniqid();
     }
 
     /**
-     * 构建带子路径的绝对路径
+     * 写临时文件
      *
      * @Author nece001@163.com
-     * @DateTime 2023-06-17
+     * @Created 2023-12-23
      *
-     * @param string $path
-     *
-     * @return string
+     * @param string $content 内容
+     * @return string 临时文件路径
      */
-    protected function buildPathWithSubPath($path)
+    private function writeTmpFile($content)
     {
-        $path = ltrim(str_replace('/', DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
-        $this->real_path = $this->sub_path . DIRECTORY_SEPARATOR . $path;
-        return $this->base_path . DIRECTORY_SEPARATOR . $this->real_path;
+        $tmp_name = $this->buildTmpName();
+        if (!file_put_contents($tmp_name, $content)) {
+            throw new FileSystemException('写临时文件失败');
+        }
+        return $tmp_name;
     }
 
     /**
-     * 获取签名url
+     * 删除临时文件
      *
      * @Author nece001@163.com
-     * @DateTime 2023-06-17
-     * 
-     * @param string $path 相对路径
-     * @param int $expires 过期时间（秒）
+     * @Created 2023-12-23
      *
-     * @return string
+     * @param string $tmp_name
+     *
+     * @return void
      */
-    public function buildPreSignedUrl(string $path, $expires = null): string
+    private function deleteTmpFile($tmp_name)
     {
-        return $this->buildUrl($path, $expires);
+        if (file_exists($tmp_name)) {
+            if (!unlink($tmp_name)) {
+                throw new FileSystemException('删除临时文件失败');
+            }
+        }
     }
 
     /**
@@ -84,26 +147,20 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      * @param string $content
      *
      * @return void
      */
     public function write(string $path, string $content): void
     {
-        $filename = $this->buildPathWithSubPath($path);
+        $tmp = $this->writeTmpFile($content);
 
-        if (file_exists($filename)) {
-            if (!is_writable($filename)) {
-                throw new FileSystemException('文件不可写');
-            }
-        } else {
-            $this->mkDir(dirname($this->real_path));
+        if (!ftp_fput($this->getConnection(), $path, $tmp, $this->mode)) {
+            throw new FileSystemException('上传文件失败');
         }
 
-        file_put_contents($filename, $content);
-
-        $this->setUri($filename);
+        $this->deleteTmpFile($tmp);
     }
 
     /**
@@ -119,19 +176,17 @@ class FileSystem extends FileSystemAbstract
      */
     public function append(string $path, string $content): void
     {
-        $filename = $this->buildPath($path);
-
-        if (file_exists($filename)) {
-            if (!is_writable($filename)) {
-                throw new FileSystemException('文件不可写');
-            }
-        } else {
-            $this->mkDir(dirname($this->real_path));
+        $tmp = $this->buildTmpName();
+        if (!ftp_get($this->getConnection(), $tmp, $path, $this->mode)) {
+            throw new FileSystemException('下载文件失败');
         }
-
-        file_put_contents($filename, $content, FILE_APPEND);
-
-        $this->setUri($filename);
+        if (!file_put_contents($tmp, $content, FILE_APPEND)) {
+            throw new FileSystemException('写临时文件失败');
+        }
+        if (!ftp_fput($this->getConnection(), $path, $tmp, $this->mode)) {
+            throw new FileSystemException('上传文件失败');
+        }
+        $this->deleteTmpFile($tmp);
     }
 
     /**
@@ -147,18 +202,14 @@ class FileSystem extends FileSystemAbstract
      */
     public function copy(string $source, string $destination): void
     {
-        try {
-            $source = $this->buildPath($source);
-            $destination = $this->buildPathWithSubPath($destination);
-
-            $this->mkDir(dirname($this->real_path));
-            copy($source, $destination);
-
-            $this->setUri($this->real_path);
-        } catch (Throwable $e) {
-            $this->error_message = $e->getMessage();
-            throw new FileSystemException('文件复制失败');
+        $tmp = $this->buildTmpName();
+        if (!ftp_get($this->getConnection(), $tmp, $source, $this->mode)) {
+            throw new FileSystemException('下载文件失败');
         }
+        if (!ftp_fput($this->getConnection(), $destination, $tmp, $this->mode)) {
+            throw new FileSystemException('上传文件失败');
+        }
+        $this->deleteTmpFile($tmp);
     }
 
     /**
@@ -174,17 +225,8 @@ class FileSystem extends FileSystemAbstract
      */
     public function move(string $source, string $destination): void
     {
-        try {
-            $source = $this->buildPath($source);
-            $destination = $this->buildPathWithSubPath($destination);
-
-            $this->mkDir(dirname($this->real_path));
-            rename($source, $destination);
-
-            $this->setUri($this->real_path);
-        } catch (Throwable $e) {
-            $this->error_message = $e->getMessage();
-            throw new FileSystemException('文件移动失败');
+        if (!ftp_rename($this->getConnection(), $source, $destination)) {
+            throw new FileSystemException('移动文件失败');
         }
     }
 
@@ -195,25 +237,15 @@ class FileSystem extends FileSystemAbstract
      * @DateTime 2023-06-17
      *
      * @param string $local 绝对路径
-     * @param string $destination 相对路径
+     * @param string $to 相对路径
      *
      * @return void
      */
-    public function upload(string $local, string $destination): void
+    public function upload(string $local, string $to): void
     {
-        $destination = $this->buildPathWithSubPath($destination);
-
-        $this->mkDir(dirname($this->real_path));
-
-        if (is_uploaded_file($local)) {
-            if (!move_uploaded_file($local, $destination)) {
-                throw new FileSystemException('文件上传失败');
-            }
-        } else {
-            throw new FileSystemException('文件上传失败：非正常上传的文件');
+        if (!ftp_put($this->getConnection(), $to, $local, $this->mode)) {
+            throw new FileSystemException('上传文件失败');
         }
-
-        $this->setUri($this->real_path);
     }
 
     /**
@@ -222,14 +254,13 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
      * @return boolean
      */
     public function exists(string $path): bool
     {
-        $filename = $this->buildPath($path);
-        return file_exists($filename);
+        return ftp_size($this->getConnection(), $path) !== -1;
     }
 
     /**
@@ -238,21 +269,20 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
      * @return string
      */
     public function read(string $path): string
     {
-        $filename = $this->buildPath($path);
-
-        if (file_exists($filename)) {
-            if (!is_readable($filename)) {
-                throw new FileSystemException('文件不可读');
-            }
+        $tmp = $this->buildTmpName();
+        if (!ftp_get($this->getConnection(), $tmp, $path, $this->mode)) {
+            throw new FileSystemException('下载文件失败');
         }
 
-        return file_get_contents($filename);
+        $content = file_get_contents($tmp);
+        $this->deleteTmpFile($tmp);
+        return $content;
     }
 
     /**
@@ -261,46 +291,15 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
      * @return void
      */
     public function delete(string $path): void
     {
-        $filename = $this->buildPath($path);
-        $this->rm($filename);
-    }
-
-    /**
-     * 删除文件或目录
-     *
-     * @Author nece001@163.com
-     * @DateTime 2023-06-17
-     *
-     * @param string $dirname
-     *
-     * @return boolean
-     */
-    private function rm($dirname)
-    {
-        if (!file_exists($dirname)) {
-            return false;
+        if (!ftp_delete($this->getConnection(), $path)) {
+            throw new FileSystemException('删除文件失败');
         }
-
-        if (is_file($dirname) || is_link($dirname)) {
-            return unlink($dirname);
-        }
-
-        $dir = dir($dirname);
-        while (false !== $entry = $dir->read()) {
-            if ($entry == '.' || $entry == '..') {
-                continue;
-            }
-            $this->rm($dirname . DIRECTORY_SEPARATOR . $entry);
-        }
-        $dir->close();
-
-        return rmdir($dirname);
     }
 
     /**
@@ -309,15 +308,14 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
      * @return void
      */
     public function mkDir(string $path): void
     {
-        $filename = $this->buildPath($path);
-        if (!file_exists($filename)) {
-            mkdir($filename, 0777, true);
+        if (!ftp_mkdir($this->getConnection(), $path)) {
+            throw new FileSystemException('创建目录失败');
         }
     }
 
@@ -327,14 +325,13 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
-     * @return intger
+     * @return integer
      */
     public function lastModified(string $path): int
     {
-        $filename = $this->buildPath($path);
-        return filemtime($filename);
+        return ftp_mdtm($this->getConnection(), $path);
     }
 
     /**
@@ -343,14 +340,13 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
      * @return integer
      */
     public function fileSize(string $path): int
     {
-        $filename = $this->buildPath($path);
-        return filesize($filename);
+        return ftp_size($this->getConnection(), $path);
     }
 
     /**
@@ -359,13 +355,28 @@ class FileSystem extends FileSystemAbstract
      * @Author nece001@163.com
      * @DateTime 2023-06-17
      *
-     * @param string $path
+     * @param string $path 相对路径
      *
      * @return array
      */
     public function readDir(string $path): array
     {
-        $filename = $this->buildPath($path);
-        return scandir($filename);
+        return ftp_nlist($this->getConnection(), $path);
+    }
+
+    /**
+     * 生成预签名 URL
+     *
+     * @Author nece001@163.com
+     * @DateTime 2023-06-17
+     * 
+     * @param string $path 相对路径
+     * @param int $expires 过期时间
+     *
+     * @return string
+     */
+    public function buildPreSignedUrl(string $path, $expires = null): string
+    {
+        return $this->buildUrl($path, $expires);
     }
 }
