@@ -19,6 +19,13 @@ class FileSystem extends FileSystemAbstract
 
     private $ftp;
 
+    public function __construct()
+    {
+        if (!function_exists('ftp_connect')) {
+            throw new FileSystemException('请先安装ftp扩展');
+        }
+    }
+
     public function __destruct()
     {
         if ($this->ftp) {
@@ -72,7 +79,7 @@ class FileSystem extends FileSystemAbstract
 
         $this->host = $this->getConfigValue('base_url');
         $this->port = $this->getConfigValue('port');
-        $this->timeout = $this->getConfigValue('timeout');
+        $this->timeout = $this->getConfigValue('timeout', 90);
         $this->username = $this->getConfigValue('username');
         $this->password = $this->getConfigValue('password');
         $this->tmp_dir = $this->getConfigValue('tmp_dir');
