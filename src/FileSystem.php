@@ -52,14 +52,12 @@ class FileSystem extends FileSystemAbstract
             if (!ftp_login($this->ftp, $this->username, $this->password)) {
                 throw new FileSystemException('登录失败');
             }
-
             if ($this->pasv) {
                 if (!ftp_pasv($this->ftp, true)) {
                     throw new FileSystemException('设置被动模式失败');
                 }
             }
         }
-
         return $this->ftp;
     }
 
@@ -77,11 +75,12 @@ class FileSystem extends FileSystemAbstract
     {
         parent::setConfig($config);
 
-        $this->host = $this->getConfigValue('base_url');
+        $this->host = $this->getConfigValue('host');
         $this->port = $this->getConfigValue('port');
         $this->timeout = $this->getConfigValue('timeout', 90);
         $this->username = $this->getConfigValue('username');
         $this->password = $this->getConfigValue('password');
+        $this->base_url = $this->getConfigValue('base_url');
         $this->tmp_dir = $this->getConfigValue('tmp_dir');
 
         $this->mode = intval($this->getConfigValue('mode', 1)) == 1 ? FTP_ASCII : FTP_BINARY;
@@ -163,7 +162,7 @@ class FileSystem extends FileSystemAbstract
     {
         $tmp = $this->writeTmpFile($content);
 
-        if (!ftp_fput($this->getConnection(), $path, $tmp, $this->mode)) {
+        if (!ftp_fput($this->getConnection(), $path, fopen($tmp, 'r'), $this->mode)) {
             throw new FileSystemException('上传文件失败');
         }
 
@@ -267,6 +266,10 @@ class FileSystem extends FileSystemAbstract
      */
     public function exists(string $path): bool
     {
+        if (ftp_rawlist($this->getConnection(), $path) !== false) {
+            return true;
+        }
+
         return ftp_size($this->getConnection(), $path) !== -1;
     }
 
