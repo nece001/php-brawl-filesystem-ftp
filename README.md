@@ -26,3 +26,20 @@ use Nece\Brawl\FileSystem\Factory;
 
         print_r($data);
 ```
+
+# 单元测试
+
+包根目录下运行：
+```
+> D:/Storage/Soft/Windows/php/phpunit/phpunit7.bat --bootstrap=tests/bootstrap.php ./tests/
+```
+或composer方式运行：
+```
+> composer run-script test
+```
+
+或进入test目录运行：
+```
+> cd tests
+> D:/Storage/Soft/Windows/php/phpunit/phpunit7.bat
+```

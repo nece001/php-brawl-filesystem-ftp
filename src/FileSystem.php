@@ -162,11 +162,13 @@ class FileSystem extends FileSystemAbstract
     {
         $tmp = $this->writeTmpFile($content);
 
-        if (!ftp_fput($this->getConnection(), $path, fopen($tmp, 'r'), $this->mode)) {
+        if (!ftp_put($this->getConnection(), $path, $tmp, $this->mode)) {
             throw new FileSystemException('上传文件失败');
         }
 
         $this->deleteTmpFile($tmp);
+
+        $this->setUri($path);
     }
 
     /**
@@ -183,16 +185,19 @@ class FileSystem extends FileSystemAbstract
     public function append(string $path, string $content): void
     {
         $tmp = $this->buildTmpName();
+
         if (!ftp_get($this->getConnection(), $tmp, $path, $this->mode)) {
             throw new FileSystemException('下载文件失败');
         }
         if (!file_put_contents($tmp, $content, FILE_APPEND)) {
             throw new FileSystemException('写临时文件失败');
         }
-        if (!ftp_fput($this->getConnection(), $path, $tmp, $this->mode)) {
+        if (!ftp_put($this->getConnection(), $path, $tmp, $this->mode)) {
             throw new FileSystemException('上传文件失败');
         }
         $this->deleteTmpFile($tmp);
+
+        $this->setUri($path);
     }
 
     /**
@@ -212,10 +217,12 @@ class FileSystem extends FileSystemAbstract
         if (!ftp_get($this->getConnection(), $tmp, $source, $this->mode)) {
             throw new FileSystemException('下载文件失败');
         }
-        if (!ftp_fput($this->getConnection(), $destination, $tmp, $this->mode)) {
+        if (!ftp_put($this->getConnection(), $destination, $tmp, $this->mode)) {
             throw new FileSystemException('上传文件失败');
         }
         $this->deleteTmpFile($tmp);
+
+        $this->setUri($destination);
     }
 
     /**
@@ -231,9 +238,11 @@ class FileSystem extends FileSystemAbstract
      */
     public function move(string $source, string $destination): void
     {
-        if (!ftp_rename($this->getConnection(), $source, $destination)) {
+        if (!@ftp_rename($this->getConnection(), $source, $destination)) {
             throw new FileSystemException('移动文件失败');
         }
+
+        $this->setUri($destination);
     }
 
     /**
@@ -252,6 +261,7 @@ class FileSystem extends FileSystemAbstract
         if (!ftp_put($this->getConnection(), $to, $local, $this->mode)) {
             throw new FileSystemException('上传文件失败');
         }
+        $this->setUri($to);
     }
 
     /**
@@ -307,8 +317,10 @@ class FileSystem extends FileSystemAbstract
      */
     public function delete(string $path): void
     {
-        if (!ftp_delete($this->getConnection(), $path)) {
-            throw new FileSystemException('删除文件失败');
+        if (!@ftp_rmdir($this->getConnection(), $path)) {
+            if (!@ftp_delete($this->getConnection(), $path)) {
+                throw new FileSystemException('删除失败');
+            }
         }
     }
 
@@ -324,8 +336,16 @@ class FileSystem extends FileSystemAbstract
      */
     public function mkDir(string $path): void
     {
-        if (!ftp_mkdir($this->getConnection(), $path)) {
-            throw new FileSystemException('创建目录失败');
+        $path = str_replace('\\', '/', $path);
+        if (!$this->exists($path)) {
+            $path = trim($path, '/');
+            $parts = explode('/', $path);
+            $dirs = array();
+            foreach ($parts as $part) {
+                $dirs[] = $part;
+                $dir = implode('/', $dirs);
+                @ftp_mkdir($this->getConnection(), $dir);
+            }
         }
     }
 
@@ -371,7 +391,11 @@ class FileSystem extends FileSystemAbstract
      */
     public function readDir(string $path): array
     {
-        return ftp_nlist($this->getConnection(), $path);
+        $result = ftp_nlist($this->getConnection(), $path);
+        if (!$result) {
+            throw new FileSystemException('获取目录列表失败');
+        }
+        return $result;
     }
 
     /**
@@ -388,5 +412,35 @@ class FileSystem extends FileSystemAbstract
     public function buildPreSignedUrl(string $path, $expires = null): string
     {
         return $this->buildUrl($path, $expires);
+    }
+
+    /**
+     * 是否目录
+     *
+     * @Author nece001@163.com
+     * @Created 2024-01-06
+     *
+     * @param string $path
+     *
+     * @return boolean
+     */
+    public function isDir($path)
+    {
+        return @ftp_size($this->getConnection(), $path) < 0;
+    }
+
+    /**
+     * 是否文件
+     *
+     * @Author nece001@163.com
+     * @Created 2024-01-06
+     *
+     * @param string $path
+     *
+     * @return boolean
+     */
+    public function isFile($path)
+    {
+        return @ftp_size($this->getConnection(), $path) > 0;
     }
 }
